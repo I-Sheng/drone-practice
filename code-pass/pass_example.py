@@ -113,7 +113,7 @@ def tello_pass(t1):
           # 當dy (target_y 與 200的差) 不等於0時, 根據其方向進行上下校正, linear.z: 下- 上+, dy / abs(dy) 表示取其正負號, 亦可用np.sign來取得
           # 200 為影像中心點 y, 大於 200 表示在中心點的下方, 小於 200表示在中心點的上方, 因此當target_y - 200後, +表示要往下方走, -表示要往上方走, 但這與linear.z的方向相反,因此需要加一個負號來使其一致
           if dy != 0:
-            msg.linear.z = -dy / abs(dy) * 0.18
+            msg.linear.z = -dy / abs(dy) * 0.1
 
           # 依照設定好的方向與速度持續發送0.5秒
           t1.controler.move(msg, 0.5)
