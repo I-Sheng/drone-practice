@@ -1,31 +1,65 @@
 # Drone Practice — DJI Tello Autonomous Gate Passing
 
-A ROS-based project for autonomous DJI Tello drone navigation through visual gates using HSV color detection and a Finite State Machine controller.
+A ROS-based project for autonomous DJI Tello drone navigation through visual gates using computer vision and control logic.
 
 ---
 
-## Overview
+## Technique & Platform
 
-The drone detects a **red-colored gate/frame** in its camera feed, aligns to its center, and autonomously flies through it. Two control approaches are implemented:
+### Hardware
+- **DJI Tello** — a lightweight, Wi-Fi-connected drone with a built-in 720p camera and onboard H.264 video encoder. The Tello communicates over UDP; all commands and telemetry are exchanged via the Tello ROS driver.
 
-- **Control loop** (`pass_example.py`) — continuous PID-style alignment correction
-- **Finite State Machine** (`fsm_pass_example.py`) — explicit state transitions: `hover → correction → forward → addSp`
+### Software & Middleware
+| Layer | Technology | Role |
+|---|---|---|
+| Middleware | **ROS (Robot Operating System)** | Topic-based communication between nodes |
+| Vision | **OpenCV** | HSV color filtering, contour detection, bounding rect |
+| Video decode | **PyAV (libav)** | Decodes the H.264 stream from the Tello camera |
+| Drone control | **Tello ROS Driver** | Exposes `/tello/cmd_vel`, `/tello/status`, video topics |
+| FSM | **python-statemachine** | Declarative finite state machine for gate passing |
+| Numerics | **NumPy** | Array operations on image frames |
+
+### Core Techniques
+- **HSV Color Filtering** — Red is detected by masking two hue ranges (0–5° and 175–180°) to handle the HSV hue wraparound at red.
+- **Contour Detection & minAreaRect** — `cv2.findContours` extracts the gate outline; `cv2.minAreaRect` gives its center and bounding area.
+- **Area-ratio Threshold** — Gate area / total frame area ≥ 0.35 triggers the `canPass` flag, indicating the drone is close enough to fly through.
+- **Alignment Control Loop** — Computes pixel offsets (dx, dy) from image center (480, 200) and corrects left/right (`linear.x`) and up/down (`linear.z`) until within threshold.
+- **Finite State Machine (FSM)** — Four states (`hover → correction → forward → addSp`) make the control logic explicit and easier to extend.
 
 ---
 
-## Architecture
+## Project Structure
+
+```
+drone-practice/
+├── README.md
+├── simple_demo.py          # Standalone flight demo using tellopy (no ROS required)
+├── basic/                  # Baseline: simple flight + vision display only
+│   ├── simple_tello.py     # Tello wrapper (state tracking, publishers for takeoff/land/flip/move)
+│   ├── test_h264_sub.py    # Vision node — detects gate, displays result, no publishing
+│   └── run_tello.py        # Simple flight sequence (takeoff → flip → land)
+└── gate_pass/              # Full pipeline: vision + autonomous gate passing
+    ├── simple_tello.py     # Tello wrapper + /target_point subscriber
+    ├── test_h264_sub.py    # Vision node — detects gate, publishes /target_point
+    ├── pass_example.py     # Control-loop gate passing
+    └── fsm_pass_example.py # FSM-based gate passing
+```
+
+---
+
+## ROS Data Flow
 
 ```
 /tello/image_raw/h264  (CompressedImage)
         │
         ▼
-  test_h264_sub.py          ← OpenCV HSV detection, computes gate center
+  test_h264_sub.py          ← HSV filter → contour → center offset → canPass
         │
         ▼
   /target_point             ← Float64MultiArray: [center_x, center_y, canPass]
         │
         ▼
-  pass_example.py           ← drone control logic
+  pass_example.py           ← alignment correction + forward motion
   (or fsm_pass_example.py)
         │
         ▼
@@ -37,32 +71,12 @@ The drone detects a **red-colored gate/frame** in its camera feed, aligns to its
 
 ---
 
-## Project Structure
-
-```
-drone-practice/
-├── code-pass/                 # Full pipeline: vision + gate passing
-│   ├── test_h264_sub.py       # Vision node — detects gate, publishes target_point
-│   ├── pass_example.py        # Control node — aligns and flies through gate
-│   └── simple_tello.py        # Tello wrapper with ROS topic integration
-│
-├── code-no-pass/              # Baseline: vision display only, no gate passing
-│   ├── test_h264_sub.py       # Vision node — detects gate, display/record only
-│   ├── week7-run_tello.py     # Simple flight demo (takeoff, flip, land)
-│   └── simple_tello.py        # Tello wrapper (state tracking only)
-│
-├── fsm_pass_example.py        # FSM-based gate-passing controller
-└── simple_demo.py             # Standalone demo using tellopy (no ROS)
-```
-
----
-
 ## Prerequisites
 
 | Requirement | Notes |
 |---|---|
 | ROS Melodic / Noetic | Standard installation |
-| Python 3.6+ | (or 2.7 for legacy nodes) |
+| Python 3.6+ | (or 2.7 for `basic/` nodes) |
 | DJI Tello | Connected via Wi-Fi |
 | Tello ROS driver | Provides `/tello/image_raw/h264` and `/tello/cmd_vel` |
 
@@ -76,28 +90,31 @@ pip install opencv-python av numpy python-statemachine tellopy
 
 ## Running the Project
 
-### Gate Passing (vision + control)
-
-Open three terminals:
+### Gate Passing (full pipeline)
 
 ```bash
 # Terminal 1 — ROS core
 roscore
 
-# Terminal 2 — Vision node (detects gate, publishes /target_point)
-python3 code-pass/test_h264_sub.py
+# Terminal 2 — Vision node
+python3 gate_pass/test_h264_sub.py
 
-# Terminal 3 — Control node (aligns drone, flies through gate)
-python3 code-pass/pass_example.py
+# Terminal 3 — Control node (choose one)
+python3 gate_pass/pass_example.py       # control-loop approach
+python3 gate_pass/fsm_pass_example.py   # FSM approach
 ```
 
-To use the FSM controller instead:
+### Basic Flight Demo
 
 ```bash
-python3 fsm_pass_example.py
+# Terminal 1 — ROS core
+roscore
+
+# Terminal 2 — Simple takeoff / flip / land
+python3 basic/run_tello.py
 ```
 
-### Simple Flight Demo (no ROS required)
+### Standalone Demo (no ROS)
 
 ```bash
 python3 simple_demo.py
@@ -109,42 +126,44 @@ python3 simple_demo.py
 
 ### 1. Gate Detection (`test_h264_sub.py`)
 
-- Decodes the H.264 video stream using **PyAV**
-- Converts each frame to **HSV color space**
-- Masks the red channel (accounts for HSV hue wraparound at 0°/180°)
-- Finds the largest red contour via `minAreaRect`
-- Computes the **center offset** from image center `(480, 200)`
-- Publishes `canPass = 1` when the gate occupies >35% of the frame area
+- Decodes the H.264 video stream frame-by-frame using **PyAV**
+- Converts each frame to **HSV** and masks the red hue range (accounts for wraparound at 0°/180°)
+- Finds the largest red contour with `cv2.findContours` + `cv2.minAreaRect`
+- Computes the center offset from image center `(480, 200)` and gate area ratio
+- Publishes `canPass = 1` when gate area ≥ 35% of total frame area
 
 ### 2. Control Loop (`pass_example.py`)
 
-- Reads `[center_x, center_y, canPass]` from `/target_point`
-- **Narrow threshold (24 px):** corrects left/right/up/down
-- **Wide threshold (60 px x, 30 px y):** maintains alignment during forward motion
-- When aligned and `canPass == 1`, boosts speed to fly through the gate
+| Phase | Condition | Action |
+|---|---|---|
+| Wait | `target == -1` | Hold until first frame arrives |
+| Correction | `\|dx\| ≥ 24 or \|dy\| ≥ 24` | Correct left/right/up/down at 0.1–0.2 m/s |
+| Forward | aligned | Move forward at 0.3 m/s |
+| Boost | `canPass == 1` | Accelerate at 0.4 m/s for 5.2 s, then stop |
 
 ### 3. FSM Controller (`fsm_pass_example.py`)
 
 | State | Behavior | Transition |
 |---|---|---|
-| `hover` | Hold position | Gate detected |
-| `correction` | Align to gate center | Within threshold |
-| `forward` | Fly toward gate | canPass flag set |
-| `addSp` | Speed boost through gate | Gate cleared |
+| `hover` | Hold position | Gate detected → `correction` or `forward` |
+| `correction` | Align to gate center | Aligned → `forward`; canPass → `addSp` |
+| `forward` | Fly toward gate | De-aligned → `correction`; canPass → `addSp` |
+| `addSp` | Speed boost through gate | Done → exit |
 
 ---
 
 ## Key Parameters
 
-| Parameter | Value | Location |
+| Parameter | Value | File |
 |---|---|---|
-| Image center | `(480, 200)` | `pass_example.py` |
-| Alignment threshold (narrow) | `24 px` | `pass_example.py` |
-| Alignment threshold (wide x) | `60 px` | `pass_example.py` |
-| Alignment threshold (wide y) | `30 px` | `pass_example.py` |
-| canPass area ratio | `0.35` (35%) | `test_h264_sub.py` |
-| Forward speed | `0.1–0.3 m/s` | `pass_example.py` |
-| Boost speed | `0.5 m/s` | `pass_example.py` |
+| Image center | `(480, 200)` | `gate_pass/pass_example.py` |
+| Alignment threshold (narrow) | `24 px` | `gate_pass/pass_example.py` |
+| Alignment threshold (wide x) | `60 px` | `gate_pass/pass_example.py` |
+| Alignment threshold (wide y) | `30 px` | `gate_pass/pass_example.py` |
+| canPass area ratio | `0.35` (35%) | `gate_pass/test_h264_sub.py` |
+| Forward speed | `0.3 m/s` | `gate_pass/pass_example.py` |
+| Boost speed | `0.4 m/s` | `gate_pass/pass_example.py` |
+| Startup frame skip | `300 frames` | `gate_pass/test_h264_sub.py` |
 
 ---
 
@@ -153,9 +172,10 @@ python3 simple_demo.py
 | Topic | Type | Direction |
 |---|---|---|
 | `/tello/image_raw/h264` | `CompressedImage` | Subscribed (vision node) |
-| `/target_point` | `Float64MultiArray` | Published (vision) / Subscribed (control) |
+| `/target_point` | `Float64MultiArray` | Published by vision / subscribed by control |
 | `/tello/cmd_vel` | `Twist` | Published (control node) |
 | `/tello/takeoff` | `Empty` | Published |
 | `/tello/land` | `Empty` | Published |
 | `/tello/emergency` | `Empty` | Published |
 | `/tello/flip` | `UInt8` | Published |
+| `/tello/status` | `TelloStatus` | Subscribed (state tracking) |
