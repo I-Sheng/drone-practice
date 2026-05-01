@@ -1,19 +1,20 @@
 #!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 
-### 本程式為影像處理迴圈範例程式, 用於從Tello的影像中進行HSV過濾, 找出特定的顏色mask, 並把mask顯示出來 ###
+### Vision processing example: applies HSV filtering to the Tello's camera feed, ###
+### finds a specific color mask, and displays the result ###
 
-import rospy                                 # 導入套件: rospy
-from sensor_msgs.msg import CompressedImage  # 導入 sensor_msgs 裡的 CompressedImage
-import av                                    # 導入套件: av
-import cv2                                   # 導入套件: cv2
-import numpy as np                           # 導入套件: numpy 並命名成 np
-import threading                             # 導入套件: threading
-import traceback                             # 導入套件: traceback
+import rospy                                 # Import package: rospy
+from sensor_msgs.msg import CompressedImage  # Import CompressedImage from sensor_msgs
+import av                                    # Import package: av
+import cv2                                   # Import package: cv2
+import numpy as np                           # Import numpy as np
+import threading                             # Import package: threading
+import traceback                             # Import package: traceback
 
 ### class StandaloneVideoStream
-### 用於將訂閱/tello/image_raw/h264所獲得的 CompressedImage 進行處理, 得到stream
-### 再從stream中取得影像
+### Wraps CompressedImage data from /tello/image_raw/h264 into a readable stream
+### Provides a stream object that can be decoded frame by frame
 class StandaloneVideoStream(object):
     def __init__(self):
         self.cond = threading.Condition()
@@ -49,116 +50,102 @@ class StandaloneVideoStream(object):
         self.cond.notifyAll()
         self.cond.release()
 
-# 建立 stream
+# Create stream instance
 stream = StandaloneVideoStream()
 
-# 定義 function callback, 訂閱 "/tello/image_raw/h264", 用於處理接收到的compressedImg, (msg)請保留, msg即為收到的用於處理接收到的compressedImg()
+# callback: subscribes to /tello/image_raw/h264; msg is the received CompressedImage
 def callback(msg):
-    #rospy.loginfo('frame: %d bytes' % len(msg.data)) # 可以解開註解來觀看目前收到的bytes穩不穩定
-    # 將接收到的compressedImg加入到stream中
+    #rospy.loginfo('frame: %d bytes' % len(msg.data)) # Uncomment to monitor incoming byte count
+    # Add received CompressedImage data into the stream
     stream.add_frame(msg.data)
 
-# 定義function: findMask, 輸入為cv hsv_img(HSV格式), 用途為根據給定的HSV 上下界值域進行過濾 從影像中找出特定顏色的mask
+# find_Mask: takes an HSV image and returns a binary mask for the red color range
 def find_Mask(img):
 
-  # 定義 HSV 值域的下界, 詳見投影片中 HSV 範圍圖中的左紅框
+  # Lower bound for left red range in HSV (see HSV range diagram in slides)
   lr0 = np.array([0, 70, 0])
-  # 定義 HSV 值域的上界, 詳見投影片中 HSV 範圍圖中的左紅框
+  # Upper bound for left red range in HSV
   ur0 = np.array([5, 255, 255])
 
-  # 定義 HSV 值域的下界, 詳見投影片中 HSV 範圍圖中的右紅框
+  # Lower bound for right red range in HSV (hue wraps around 180)
   lr1 = np.array([175, 70, 0])
-  # 定義 HSV 值域的上界, 詳見投影片中 HSV 範圍圖中的右紅框
+  # Upper bound for right red range in HSV
   ur1 = np.array([180, 255, 255])
 
-  # 透過第一組左紅框的HSV值域進行影像過濾
+  # Filter with left red range
   rm0 = cv2.inRange(img, lr0, ur0)
 
-  # 透過第二組右紅框的HSV值域進行影像過濾
+  # Filter with right red range
   rm1 = cv2.inRange(img, lr1, ur1)
 
-  # 將第一組, 第二組紅框值域進行or運算, 將兩者結果合併
+  # Combine both masks with bitwise OR
   rm = cv2.bitwise_or(rm0, rm1)
-  return rm # 回傳結果
+  return rm
 
 # main function
 def main():
 
-    # fourcc: video的編碼格式, 如 XVID, MP4V 等等...
+    # fourcc: video encoding format (e.g., XVID, MP4V)
     fourcc = cv2.VideoWriter_fourcc('X', 'V', 'I', 'D')
-    # out: 建立 VideoWriter, video名稱為 test.avi, 寫入格式為 'X',"V",'I','D', FPS 為 20.0, video解析度為 (影像寬, 影像高)
-    # 由於這邊會輸出左影像為原始影像, 右影像為視覺處理的影像, 因此在寬上面會是960*2 = 1920, 高720不變
+    # out: VideoWriter for test.avi at 20 FPS; width = 1920 (960 original + 960 processed), height = 720
     out = cv2.VideoWriter('test.avi', fourcc, 20.0, (1920, 720))
 
-    # 告訴ros此程式為node, node名稱為 'h264_listener'
+    # Register as ROS node named 'h264_listener'
     rospy.init_node('h264_listener')
 
-    # 定義 rospy.Subscriber, 會訂閱 topic: '/tello/image_raw/h264' , CompressedImage為 topic: '/tello/image_raw/h264' 所需要的訊息格式
-    # callback 為 接收訊息與處理function的名字, 可以自行定義, 但需一致
+    # Subscribe to /tello/image_raw/h264 (CompressedImage); callback handles each received frame
     rospy.Subscriber("/tello/image_raw/h264", CompressedImage, callback)
 
-    # 透過 套件 av 來開啟stream
+    # Open the stream with av
     container = av.open(stream)
 
-    # 在視窗上顯示 log: 'main: opened'
     rospy.loginfo('main: opened')
 
-    # 對container進行解碼, 獲取已被加入至stream中的影像
-    # 為 for loop
-    # 當container解碼後發現沒有影像將會終止迴圈, 也代表 此程式會結束執行
+    # Decode frames from container; loop exits when no more frames are available
     for frame in container.decode(video=0):
 
-        # 透過 np.array 將 frame 先轉成np格式, 再透過cvtColor 將RGB格式轉換成BGR格式
+        # Convert frame to numpy BGR image
         image = cv2.cvtColor(np.array(
             frame.to_image()), cv2.COLOR_RGB2BGR)
 
-        # 使用cvtColor 將 BGR 格式轉換成 HSV 格式
+        # Convert BGR to HSV
         hsv_img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-        # 執行 function: findMask, 將 hsv_img 作為 參數輸入, red_mask為 HSV 過濾後的結果
+        # Apply red mask filter
         red_mask = find_Mask(hsv_img)
 
-        # 對找出的HSV mask 進行輪廓搜尋: findContours
-        # findContours 第一個輸入參數為 二值化的mask, 此處可以直接使用我們先前進行HSV過濾的結果
-        # findContours 第二個輸入參數為 Flag, 可以設定要找最外圍的輪廓 或是連內部輪廓也一起尋找, 此處使用 RETR_EXTERNAL: 找最外圍的輪廓
-        # findContours 第三個輸入參數為 亦為Flag, 可以設定要找全部的點或是僅找角點, 此處使用 CHAIN_APPROX_NONE: 尋找全部的點
-        # findContours 會因為cv的版本而有不同的回傳, 如此處有發生問題,　請改成　　_, c_c, contour_h = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        # Find contours in the red mask
+        # RETR_EXTERNAL: only outermost contours
+        # CHAIN_APPROX_NONE: store all contour points
+        # Note: some OpenCV versions return (image, contours, hierarchy) — change to: _, c_c, _ = ... if needed
         _, c_c, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
-        # 建立變數 show_image, 用於顯示找到的輪廓與其中心點
-        # 首先透過 np.zeros建立空的array, shape為讀取影像的大小, 種類為np.uint8
-        # 再來透過 cv2.cvtColor, 將空array 從 gray_scale 格式轉換成 BGR 格式
+        # Build a blank BGR image for visualization
         show_image = cv2.cvtColor(np.zeros(image.shape[:2], dtype=np.uint8), cv2.COLOR_GRAY2BGR)
 
-        # 透過 drawContours, 將 找到的 c_c 畫在 show_image上
-        # -1: 表示目標為 c_c 裡面所有的 contour, 如給 0 表示只畫 第一個
-        # (0, 0, 255): contour的顏色, 此處為 BGR 格式, 每一個值的範圍從0 ~ 255, 0最低, 255最大
-        # -1: 除了-1以外的數值表示畫輪廓線大小, -1 表示 塗滿
+        # Draw all found contours on show_image
+        # -1: draw all contours; (0,0,255): BGR color red; -1 thickness: filled
         cv2.drawContours(show_image, c_c, -1, (0, 0, 255), -1)
 
-        # 先透過 np.concatenate 將原始影像 image 以及視覺處理的影像 show_image 進行左右合併
-        # 將合併後的影像 寫入到video: out中
+        # Concatenate original and processed images side by side, write to video file
         out.write(np.concatenate((image, show_image), axis = 1))
 
-        # 顯示 影像, 視窗名稱為result, 欲顯示的cv_img為 np.concatenate((image, show_image), axis = 1)
+        # Display the combined image in a window
         cv2.imshow('result', np.concatenate((image, show_image), axis = 1))
 
-        # 設定視窗刷新頻率
+        # Refresh display
         cv2.waitKey(1)
 
 # main
 if __name__ == '__main__':
 
-    # try catch
     try:
-        # 執行 main fuction, 啟動影像處理迴圈
+        # Run main function to start vision processing loop
         main()
 
-    # 例外處理: BaseException, 有發生會透過 traceback 顯示例外錯誤
     except BaseException:
         traceback.print_exc()
 
-    # 最終處理: 關掉 stream, 並將cv2所產生的影像視窗都關掉
     finally:
         stream.close()
         cv2.destroyAllWindows()
